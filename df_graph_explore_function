@@ -1,0 +1,187 @@
+#packages needed
+import pandas as pd
+import requests
+from io import StringIO
+import networkx as nx
+import numpy as np
+import re
+import scrapy 
+import math
+import csv
+import matplotlib.pyplot as plt 
+import warnings
+#matplot.lib packages are updating a function that Networkx are using - this gives an error message. This line ignore that error message.     
+warnings.filterwarnings("ignore", category=UserWarning) 
+
+#This imports the .csv file from Anders G google drive account. Could not make it work to import the file directly from the sheet
+orig_url='https://drive.google.com/file/d/1LbA7E94eJxVUv4lq8lVBM9q1ewWc_6iV/view?usp=sharing'
+
+file_id = orig_url.split('/')[-2]
+dwn_url='https://drive.google.com/uc?export=download&id=' + file_id
+url = requests.get(dwn_url).text
+csv_raw = StringIO(url)
+df = pd.read_csv(csv_raw)
+
+def df_graph_explore(search, numberTags = 45, gexfFile_full = False, gexfFile_top = False, csvFile_top = False, csvFile_full = False, printGraph = True, figureSize = [20, 10], printtop5 = True): 
+    '''
+    Takes a pandas dataframe and explores it.
+    
+    search,               #This is the search term. use the "|" operator to include more search terms, eg. search = "google|twitter". The search is case insensitive 
+    numberTags=45,        #This is the number of tags with the highest degree scorer to include in the network graph  
+    gexfFile_full=False,  #If True - This writes a .gexf file with all the nodes 
+    gexfFile_top=False,   #If True - This writes a .gexf file with the highest degree scorer according to the "numberTags" 
+    csvFile_top=False,    #If True - This writes a .csv file with the 5 most cited articles
+    csvFile_full=False,   #If True - This writes a .csv file with all the articles 
+    printGraph = True     #If True - This prints out a network graph with the number of tags according to "numberTags"
+    figureSize = [20, 10] #This changes the size of the printed figure.
+    printtop5 = True      #If True - This prints out the titles of the top 5 most cited articles 
+    
+    The Dataframe must be called "df" and must include the collumns: "Keywords Author+Index", "Title", "Year", "Cited by" 
+    '''
+
+    warnings.filterwarnings("ignore", category=UserWarning) 
+#merge collumns in to a new colms called "text", this new colmn can afterwards been searched though for interesting words
+    #df['allKeywords'] = df['Author Keywords'] + ":" + df['Index Keywords'] #There is a problem with this line. I need to merge them better than just merge, have to deal with missing val
+    df['text'] = df['Abstract'] + ":" + df['Title'] + ":" + df['Keywords Author+Index'] #the merging
+#df.loc[0, 'text'] #uncomment to look at the result for the first row 
+
+#Make the text in "text" lowercase so it is easier to search. 
+    df['text'] = df['text'].str.lower() 
+
+#the search for the desired word. 
+    search1 = search.lower() #make sure the search are lower case
+    df1 = df[df['text'].str.contains(search1)]
+
+#cleaning up the result a bit. eg. in order to avoid the comma "," to be a node in the network graph later on. (maybe more cleaning is nessasary) 
+    df7 = df1["Keywords Author+Index"].str.replace("^;", "").str.replace(",","").str.lower()
+
+#here we are splitting the tags from one list into one tag pr. list. 
+    df2 = df7.str.split(";")
+
+#here we are making the edgelist, we are relating each tags with the other tags from the same observation
+    edge = [[i[0],j] for i in df2 for j in i[1:]] #I am not completely sure how this works. But it does.. 
+
+#This makes a new dataframe with the colmns "from" and "to" (it does not matter what is "from" and what is "to" since it is a undirected graph)
+    edgeList=pd.DataFrame(edge, columns=["from", "to"])
+
+#Loading edelist (directly as a list) into the networkx package. Now we have a network structure and are not working with a dataframe any more
+    tags = nx.from_edgelist(edge)
+    tags_big = nx.from_edgelist(edge)
+
+#this prints out the informations about the network. This is the BIG holistic network - before we are filtering it down. 
+#print(nx.info(tags))
+
+####This sorts the nodes according to degree.  
+#sorted(tags.degree, key=lambda x: x[1], reverse=True) #delete this one i think..  
+    sortedTags = sorted(tags.degree, key=lambda x: x[1], reverse=True)
+
+#remove tags according to "numberTags" eg. numberTags = 50
+    topTags = sortedTags[numberTags:] #here we are taking all the tags that are not(!) the biggest degree "numberTags" 
+    a=[] #this makes an empty list that we are using in the for loop
+    for t in topTags: 
+        b=t[0] #this takes the first (desired) element from each list
+        a.append(b) #this puts that element into the newly made list - now we have a list with all the nodes that are NOT the x biggest node degree
+
+    tags.remove_nodes_from(a) #this removes the small nodes from the graph. 
+    sorted(tags.degree, key=lambda x: x[1], reverse=True) #here we are soring the nodes inorder to see what are included
+                             #Remenber that the new degree score are in relation to the new graph, not the original graph  
+    
+
+#find the biggest degree score to size nodes according to degree scorer that we are gonna use later.  
+    biggest = sorted(tags.degree, key=lambda x: x[1], reverse=True)#again we are sorting the nodes - here to find the biggest degree score.   
+    biggest1 = biggest[0][1]# here we are finding the biggest node degree score. And puts it in the variable "biggest1"
+
+### This is to Remove isolated nodes. It could make most sence to include them. But is messes with the visualizations. But they should be included since they are among the biggest nodes 
+#list(nx.isolates(tags)) # this does not work
+    tags.remove_nodes_from(list((nx.isolates(tags)))) #this works
+
+#math stuff to make the node sizes:
+    nodeSizeHigh = 3000 #this makes the biggest node_size() to the nx.draw() function
+    nodeSizeLow = 50 #this is the smalles
+    nodeSizeMath = nodeSizeHigh-nodeSizeLow
+    multiply = nodeSizeMath/biggest1
+
+#Here we are drawing the graph! WUHU!      #more stuff could be done. It could be cool to make a "no overlap" function. I cant find any to networkX package, but it must exist.
+    if printGraph == True:
+        d = dict(tags.degree)
+        plt.rcParams['figure.figsize'] = figureSize #this scales how big the printing of the graph should be. 
+        nx.draw(tags, 
+                with_labels=True,     #includes labels to the graph
+                font_size = 15,       #label font size
+                node_color="skyblue", #color of the nodes
+                edge_color="skyblue", #edge color
+                alpha = 0.7,          #edge transparency
+                pos=nx.fruchterman_reingold_layout(tags),   #the graph layout (spatialization) here: "fruchterman_reingold" layout
+        #pos=nx.spring_layout(tags, scale=2),       #alternative graph layout (spatialization)
+                node_size=[v*multiply+nodeSizeLow for v in d.values()]) #this makes the nodes different sizes accoring to their degree score
+
+#this gives information about the graph 
+#print(nx.info(tags))
+
+#makes a data.frame with the included articles. Sorted by "cited by"
+    dataframe = df1.loc[:,["Title", "Year", "Cited by", "Keywords Author+Index", "Abstract"]].sort_values(by=['Cited by', "Year"], ascending=False).reset_index(drop=True) #here we have to reset the index in order to .loc the top 5 articles in the next line 
+
+#get top 5 cited articles
+    dataframe_top5 = dataframe.loc[0:6, "Title"]
+    dftop5= (list(dataframe_top5))
+    if printtop5 == True: 
+        print("          The 5 most cited articles are:")
+        print("")
+        print(dftop5)
+
+    dfLen = len(df.index)
+    df1Len = len(df1.index)
+    procent = df1Len/dfLen*100
+    
+    print("")
+    print("          ", df1Len, " articles out of ", dfLen, " contains the word: ", "'", search ,"'", sep='')
+    print("          That is: ", round(procent,2), " procent of the total number of articles", sep='')
+    print("")
+    
+#making the name to the .gexf file
+    gexf = ".gexf"
+    scopusGrapher = "dfGraphExplore_"
+
+    top="_top"
+    nr = str(numberTags)
+    gexfName_top = scopusGrapher+search+top+nr+gexf
+
+    full="_all"
+    nr1 =str(dfLen)
+    gexfName_full = scopusGrapher+search+full+nr1+gexf
+
+    csv = ".csv"
+    csvName_full = scopusGrapher+search+full+nr1+csv
+
+    nr3 = "5"
+    csvName_top = scopusGrapher+search+top+nr3+csv
+
+    df1['indexNr'] = df1.index+1
+    dataframe_1 = df1.loc[:,["indexNr", "Title", "Year", "Cited by", "Keywords Author+Index", "Abstract"]].sort_values(by=['Cited by', "Year"], ascending=False).reset_index(drop=True) #here we have to reset the index in order to .loc the top 5 articles in the next line
+    dataframe_top5_1 = dataframe_1.loc[0:4, :]
+
+# makes gexf files if statement is true     
+    if gexfFile_full == True:
+        nx.write_gexf(tags_big, gexfName_full)
+        print("The file: '", gexfName_full, "' have been saved to your computer", sep='')
+
+    if gexfFile_top == True:
+        nx.write_gexf(tags, gexfName_top)
+        print("The file: '", gexfName_top, "' have been saved to your computer", sep='')
+# makes gcsv files if statement is true
+    if csvFile_full == True:
+        dataframe_1.to_csv(csvName_full, encoding='utf-8')
+        print("The file: '", csvName_full, "' have been saved to your computer", sep='')
+
+    if csvFile_top == True:
+        dataframe_top5_1.to_csv(csvName_top, encoding='utf-8')
+        print("The file: '", csvName_top, "' have been saved to your computer", sep='') 
+    
+    print("")
+    print("          Here is the network graph showing the ", numberTags, " most used tags related to ", "'", search, "'", sep='')    
+    
+    #this removes a warning that I am quite sure are not a problem:
+    pd.set_option('mode.chained_assignment', None)
+    
+#The Function
+#df_graph_explore(search, numberTags = 45, gexfFile_full = False, gexfFile_top = False, csvFile_top = False, csvFile_full = False, printGraph = True, figureSize = [20, 10], printtop5 = True) 
